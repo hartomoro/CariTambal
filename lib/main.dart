@@ -42,7 +42,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   Position? _currentPosition;
   List<WorkshopPlace> _places = const [];
   bool _isLoading = true;
-  String? _errorMessage;
+  _ErrorState? _errorState;
 
   @override
   void initState() {
@@ -59,7 +59,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   Future<void> _initLocationAndSearch() async {
     _safeSetState(() {
       _isLoading = true;
-      _errorMessage = null;
+      _errorState = null;
     });
 
     try {
@@ -75,23 +75,55 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
       _safeSetState(() {
         _places = places;
-        _errorMessage =
-            places.isEmpty ? 'Tidak ada bengkel/tambal ban dalam radius.' : null;
+        _errorState = places.isEmpty
+            ? _ErrorState(
+                message: 'Tidak ada bengkel/tambal ban dalam radius.',
+                actions: [
+                  _ErrorAction(
+                    label: 'Coba lagi',
+                    icon: Icons.refresh,
+                    onPressed: _initLocationAndSearch,
+                  ),
+                ],
+              )
+            : null;
       });
 
       if (places.isNotEmpty) {
         _fitCameraToResults(focus: places.first.location);
       }
     } on LocationPermissionDeniedException catch (e) {
-      _safeSetState(() => _errorMessage = e.message);
+      _setError(
+        e.message,
+        actions: [
+          _ErrorAction(
+            label: 'Buka Pengaturan Aplikasi',
+            icon: Icons.app_settings_alt,
+            onPressed: () async {
+              await Geolocator.openAppSettings();
+            },
+          ),
+        ],
+      );
     } on LocationServiceDisabledException catch (e) {
-      _safeSetState(() => _errorMessage = e.message);
+      _setError(
+        e.message,
+        actions: [
+          _ErrorAction(
+            label: 'Buka Pengaturan Lokasi',
+            icon: Icons.location_on,
+            onPressed: () async {
+              await Geolocator.openLocationSettings();
+            },
+          ),
+        ],
+      );
     } on PlacesApiKeyMissingException catch (e) {
-      _safeSetState(() => _errorMessage = e.message);
+      _setError(e.message);
     } on PlacesException catch (e) {
-      _safeSetState(() => _errorMessage = e.message);
+      _setError(e.message);
     } catch (e) {
-      _safeSetState(() => _errorMessage = 'Terjadi kesalahan: $e');
+      _setError('Terjadi kesalahan: $e');
     } finally {
       _safeSetState(() => _isLoading = false);
     }
@@ -239,7 +271,8 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
       );
     }
 
-    if (_errorMessage != null) {
+    final errorState = _errorState;
+    if (errorState != null) {
       return Expanded(
         child: Center(
           child: Padding(
@@ -248,16 +281,29 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  _errorMessage!,
+                  errorState.message,
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 12),
-                ElevatedButton.icon(
-                  onPressed: _initLocationAndSearch,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Coba lagi'),
-                )
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: errorState.actions
+                      .map(
+                        (action) => ElevatedButton.icon(
+                          onPressed: _isLoading
+                              ? null
+                              : () async {
+                                  await action.onPressed();
+                                },
+                          icon: Icon(action.icon),
+                          label: Text(action.label),
+                        ),
+                      )
+                      .toList(),
+                ),
               ],
             ),
           ),
@@ -348,6 +394,13 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cari Tambal & Bengkel Terdekat'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _isLoading ? null : _initLocationAndSearch,
+            tooltip: 'Muat ulang lokasi dan pencarian',
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -376,10 +429,46 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     );
   }
 
+  void _setError(String message, {List<_ErrorAction> actions = const []}) {
+    final hasRetry = actions.any((action) => action.label == 'Coba lagi');
+    final mergedActions = [
+      ...actions,
+      if (!hasRetry)
+        _ErrorAction(
+          label: 'Coba lagi',
+          icon: Icons.refresh,
+          onPressed: _initLocationAndSearch,
+        ),
+    ];
+
+    _safeSetState(
+      () => _errorState = _ErrorState(message: message, actions: mergedActions),
+    );
+  }
+
   void _safeSetState(VoidCallback fn) {
     if (!mounted) return;
     setState(fn);
   }
+}
+
+class _ErrorState {
+  const _ErrorState({required this.message, this.actions = const []});
+
+  final String message;
+  final List<_ErrorAction> actions;
+}
+
+class _ErrorAction {
+  const _ErrorAction({
+    required this.label,
+    required this.onPressed,
+    this.icon = Icons.settings,
+  });
+
+  final String label;
+  final IconData icon;
+  final Future<void> Function() onPressed;
 }
 
 class WorkshopPlace {
