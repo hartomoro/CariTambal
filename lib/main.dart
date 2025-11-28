@@ -76,7 +76,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
       if (places.isEmpty) {
         setState(() => _errorMessage = 'Tidak ada bengkel/tambal ban dalam radius.');
       } else {
-        _moveCameraToNearest(places.first.location);
+        _fitCameraToResults(focus: places.first.location);
       }
     } on LocationPermissionDeniedException catch (e) {
       setState(() => _errorMessage = e.message);
@@ -118,9 +118,55 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     return Geolocator.getCurrentPosition();
   }
 
-  void _moveCameraToNearest(LatLng target) {
-    _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(target, 14.5),
+  void _fitCameraToResults({LatLng? focus}) {
+    if (_mapController == null) return;
+
+    final points = <LatLng>[
+      if (_currentPosition != null)
+        LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+      ..._places.map((place) => place.location),
+      if (focus != null) focus,
+    ];
+
+    if (points.isEmpty) return;
+
+    // When we only have one point, center on it with a reasonable zoom.
+    if (points.length == 1) {
+      _mapController!.animateCamera(
+        CameraUpdate.newLatLngZoom(points.first, 15),
+      );
+      return;
+    }
+
+    var south = points.first.latitude;
+    var north = points.first.latitude;
+    var west = points.first.longitude;
+    var east = points.first.longitude;
+
+    for (final point in points.skip(1)) {
+      south = south < point.latitude ? south : point.latitude;
+      north = north > point.latitude ? north : point.latitude;
+      west = west < point.longitude ? west : point.longitude;
+      east = east > point.longitude ? east : point.longitude;
+    }
+
+    if (south == north) {
+      south -= 0.001;
+      north += 0.001;
+    }
+
+    if (west == east) {
+      west -= 0.001;
+      east += 0.001;
+    }
+
+    final bounds = LatLngBounds(
+      southwest: LatLng(south, west),
+      northeast: LatLng(north, east),
+    );
+
+    _mapController!.animateCamera(
+      CameraUpdate.newLatLngBounds(bounds, 60),
     );
   }
 
@@ -133,7 +179,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     if (Platform.isIOS) {
       final googleMapsSchemeUrl = Uri.parse('comgooglemaps://?daddr=$destination');
       if (await canLaunchUrl(googleMapsSchemeUrl)) {
-        await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+        await launchUrl(googleMapsSchemeUrl, mode: LaunchMode.externalApplication);
         return;
       }
 
@@ -146,7 +192,10 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
     if (await canLaunchUrl(googleMapsUrl)) {
       await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+      return;
     }
+
+    _showMessage('Tidak dapat membuka aplikasi navigasi.');
   }
 
   Set<Marker> _buildMarkers() {
@@ -227,7 +276,10 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
               markers: _buildMarkers(),
               myLocationEnabled: true,
               myLocationButtonEnabled: true,
-              onMapCreated: (controller) => _mapController = controller,
+              onMapCreated: (controller) {
+                _mapController = controller;
+                _fitCameraToResults();
+              },
             ),
           ),
           const SizedBox(height: 12),
@@ -254,7 +306,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: ListTile(
-              onTap: () => _moveCameraToNearest(place.location),
+              onTap: () => _fitCameraToResults(focus: place.location),
               title: Text(place.name),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -308,6 +360,15 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
           _buildStatus(),
         ],
       ),
+    );
+  }
+
+  void _showMessage(String message) {
+    final context = this.context;
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
     );
   }
 }
