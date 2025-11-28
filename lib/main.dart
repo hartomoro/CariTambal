@@ -198,6 +198,36 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     _showMessage('Tidak dapat membuka aplikasi navigasi.');
   }
 
+  Future<void> _onOpenPlaceTap(WorkshopPlace place) async {
+    final locationQuery = '${place.location.latitude},${place.location.longitude}';
+    final googleMapsUrl = Uri.parse(
+      'https://www.google.com/maps/search/?api=1'
+      '&query=$locationQuery'
+      '${place.placeId != null ? '&query_place_id=${place.placeId}' : ''}',
+    );
+
+    if (Platform.isIOS) {
+      final googleMapsSchemeUrl = Uri.parse('comgooglemaps://?q=$locationQuery');
+      if (await canLaunchUrl(googleMapsSchemeUrl)) {
+        await launchUrl(googleMapsSchemeUrl, mode: LaunchMode.externalApplication);
+        return;
+      }
+
+      final appleMapsUrl = Uri.parse('http://maps.apple.com/?q=$locationQuery');
+      if (await canLaunchUrl(appleMapsUrl)) {
+        await launchUrl(appleMapsUrl, mode: LaunchMode.externalApplication);
+        return;
+      }
+    }
+
+    if (await canLaunchUrl(googleMapsUrl)) {
+      await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+      return;
+    }
+
+    _showMessage('Tidak dapat membuka aplikasi peta.');
+  }
+
   Set<Marker> _buildMarkers() {
     final markers = <Marker>{};
 
@@ -306,7 +336,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: ListTile(
-              onTap: () => _fitCameraToResults(focus: place.location),
+              onTap: () => _showPlaceDetails(place),
               title: Text(place.name),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -369,6 +399,65 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message)),
+    );
+  }
+
+  void _showPlaceDetails(WorkshopPlace place) {
+    _fitCameraToResults(focus: place.location);
+
+    showModalBottomSheet(
+      context: context,
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                place.name,
+                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text(place.address),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  const Icon(Icons.place, size: 18, color: Colors.grey),
+                  const SizedBox(width: 4),
+                  Text('${place.distanceInMeters.toStringAsFixed(0)} m'),
+                  if (place.rating != null) ...[
+                    const SizedBox(width: 12),
+                    const Icon(Icons.star, color: Colors.amber, size: 18),
+                    const SizedBox(width: 2),
+                    Text(place.rating!.toStringAsFixed(1)),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () => _onOpenPlaceTap(place),
+                      icon: const Icon(Icons.map_outlined),
+                      label: const Text('Buka di Maps'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: () => _onDirectionTap(place),
+                      icon: const Icon(Icons.route_outlined),
+                      label: const Text('Get Direction'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
