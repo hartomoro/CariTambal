@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -43,10 +42,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   Position? _currentPosition;
   List<WorkshopPlace> _places = const [];
   bool _isLoading = true;
-  _ErrorState? _errorState;
-  String? _selectedPlaceId;
-  final _listScrollController = ScrollController();
-  final _placeTileKeys = <String, GlobalKey>{};
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -57,86 +53,43 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   @override
   void dispose() {
     _mapController?.dispose();
-    _listScrollController.dispose();
     super.dispose();
   }
 
   Future<void> _initLocationAndSearch() async {
-    _safeSetState(() {
+    setState(() {
       _isLoading = true;
-      _errorState = null;
-      _selectedPlaceId = null;
+      _errorMessage = null;
     });
 
     try {
       final position = await _determinePosition();
-      if (!mounted) return;
-
-      _safeSetState(() => _currentPosition = position);
+      setState(() => _currentPosition = position);
 
       final places = await PlacesRepository(apiKey: _googlePlacesApiKey)
           .fetchNearbyWorkshops(position, radiusMeters: _defaultRadiusMeters);
 
-      if (!mounted) return;
-
-      _safeSetState(() {
+      setState(() {
         _places = places;
-        _placeTileKeys.clear();
-        _selectedPlaceId = places.isNotEmpty
-            ? places.first.placeId ?? places.first.name
-            : null;
-        _errorState = places.isEmpty
-            ? _ErrorState(
-                message: 'Tidak ada bengkel/tambal ban dalam radius.',
-                actions: [
-                  _ErrorAction(
-                    label: 'Coba lagi',
-                    icon: Icons.refresh,
-                    onPressed: _initLocationAndSearch,
-                  ),
-                ],
-              )
-            : null;
       });
 
-      if (places.isNotEmpty) {
+      if (places.isEmpty) {
+        setState(() => _errorMessage = 'Tidak ada bengkel/tambal ban dalam radius.');
+      } else {
         _fitCameraToResults(focus: places.first.location);
-        _scheduleScrollToSelected();
       }
     } on LocationPermissionDeniedException catch (e) {
-      _setError(
-        e.message,
-        actions: [
-          _ErrorAction(
-            label: 'Buka Pengaturan Aplikasi',
-            icon: Icons.app_settings_alt,
-            onPressed: () async {
-              await Geolocator.openAppSettings();
-            },
-          ),
-        ],
-      );
+      setState(() => _errorMessage = e.message);
     } on LocationServiceDisabledException catch (e) {
-      _setError(
-        e.message,
-        actions: [
-          _ErrorAction(
-            label: 'Buka Pengaturan Lokasi',
-            icon: Icons.location_on,
-            onPressed: () async {
-              await Geolocator.openLocationSettings();
-            },
-          ),
-        ],
-      );
+      setState(() => _errorMessage = e.message);
     } on PlacesApiKeyMissingException catch (e) {
-      _setError(e.message);
+      setState(() => _errorMessage = e.message);
     } on PlacesException catch (e) {
-      _setError(e.message);
+      setState(() => _errorMessage = e.message);
     } catch (e) {
-      _setError('Terjadi kesalahan: $e');
+      setState(() => _errorMessage = 'Terjadi kesalahan: $e');
     } finally {
-      _safeSetState(() => _isLoading = false);
+      setState(() => _isLoading = false);
     }
   }
 
@@ -260,21 +213,14 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     }
 
     for (final place in _places) {
-      final isSelected = place.identifier == _selectedPlaceId;
       markers.add(
         Marker(
           markerId: MarkerId(place.placeId ?? place.name),
           position: place.location,
-          icon: isSelected
-              ? BitmapDescriptor.defaultMarkerWithHue(
-                  BitmapDescriptor.hueGreen,
-                )
-              : BitmapDescriptor.defaultMarker,
           infoWindow: InfoWindow(
             title: place.name,
             snippet: place.address,
           ),
-          onTap: () => _selectPlace(place),
         ),
       );
     }
@@ -289,8 +235,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
       );
     }
 
-    final errorState = _errorState;
-    if (errorState != null) {
+    if (_errorMessage != null) {
       return Expanded(
         child: Center(
           child: Padding(
@@ -299,29 +244,16 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  errorState.message,
+                  _errorMessage!,
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  alignment: WrapAlignment.center,
-                  children: errorState.actions
-                      .map(
-                        (action) => ElevatedButton.icon(
-                          onPressed: _isLoading
-                              ? null
-                              : () async {
-                                  await action.onPressed();
-                                },
-                          icon: Icon(action.icon),
-                          label: Text(action.label),
-                        ),
-                      )
-                      .toList(),
-                ),
+                ElevatedButton.icon(
+                  onPressed: _initLocationAndSearch,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Coba lagi'),
+                )
               ],
             ),
           ),
@@ -368,23 +300,13 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
     return Expanded(
       child: ListView.builder(
-        controller: _listScrollController,
         itemCount: _places.length,
         itemBuilder: (context, index) {
           final place = _places[index];
-          final isSelected = place.identifier == _selectedPlaceId;
-          final key = _placeTileKeys.putIfAbsent(
-            place.identifier,
-            () => GlobalKey(),
-          );
           return Card(
-            key: key,
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            color: isSelected
-                ? Theme.of(context).colorScheme.primaryContainer
-                : null,
             child: ListTile(
-              onTap: () => _selectPlace(place),
+              onTap: () => _fitCameraToResults(focus: place.location),
               title: Text(place.name),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -422,13 +344,6 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Cari Tambal & Bengkel Terdekat'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _initLocationAndSearch,
-            tooltip: 'Muat ulang lokasi dan pencarian',
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -456,75 +371,6 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
       SnackBar(content: Text(message)),
     );
   }
-
-  void _setError(String message, {List<_ErrorAction> actions = const []}) {
-    final hasRetry = actions.any((action) => action.label == 'Coba lagi');
-    final mergedActions = [
-      ...actions,
-      if (!hasRetry)
-        _ErrorAction(
-          label: 'Coba lagi',
-          icon: Icons.refresh,
-          onPressed: _initLocationAndSearch,
-        ),
-    ];
-
-    _safeSetState(
-      () {
-        _errorState = _ErrorState(message: message, actions: mergedActions);
-        _selectedPlaceId = null;
-      },
-    );
-  }
-
-  void _safeSetState(VoidCallback fn) {
-    if (!mounted) return;
-    setState(fn);
-  }
-
-  void _selectPlace(WorkshopPlace place) {
-    _safeSetState(() {
-      _selectedPlaceId = place.identifier;
-    });
-
-    _fitCameraToResults(focus: place.location);
-    _scheduleScrollToSelected();
-  }
-
-  void _scheduleScrollToSelected() {
-    final selectedId = _selectedPlaceId;
-    if (selectedId == null) return;
-
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      final tileContext = _placeTileKeys[selectedId]?.currentContext;
-      if (tileContext != null) {
-        Scrollable.ensureVisible(
-          tileContext,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeInOut,
-        );
-      }
-    });
-  }
-}
-
-class _ErrorState {
-  const _ErrorState({required this.message, this.actions = const []});
-
-  final String message;
-  final List<_ErrorAction> actions;
-}
-
-class _ErrorAction {
-  const _ErrorAction({
-    required this.label,
-    required this.onPressed,
-    this.icon = Icons.settings,
-  });
-
-  final String label;
-  final IconData icon;
-  final Future<void> Function() onPressed;
 }
 
 class WorkshopPlace {
@@ -543,8 +389,6 @@ class WorkshopPlace {
   final double distanceInMeters;
   final double? rating;
   final String? placeId;
-
-  String get identifier => placeId ?? name;
 }
 
 class PlacesRepository {
