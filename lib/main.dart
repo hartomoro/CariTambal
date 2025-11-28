@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
@@ -44,6 +45,8 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   bool _isLoading = true;
   _ErrorState? _errorState;
   String? _selectedPlaceId;
+  final _listScrollController = ScrollController();
+  final _placeTileKeys = <String, GlobalKey>{};
 
   @override
   void initState() {
@@ -54,6 +57,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   @override
   void dispose() {
     _mapController?.dispose();
+    _listScrollController.dispose();
     super.dispose();
   }
 
@@ -77,6 +81,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
       _safeSetState(() {
         _places = places;
+        _placeTileKeys.clear();
         _selectedPlaceId = places.isNotEmpty
             ? places.first.placeId ?? places.first.name
             : null;
@@ -96,6 +101,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
       if (places.isNotEmpty) {
         _fitCameraToResults(focus: places.first.location);
+        _scheduleScrollToSelected();
       }
     } on LocationPermissionDeniedException catch (e) {
       _setError(
@@ -362,11 +368,17 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
     return Expanded(
       child: ListView.builder(
+        controller: _listScrollController,
         itemCount: _places.length,
         itemBuilder: (context, index) {
           final place = _places[index];
           final isSelected = place.identifier == _selectedPlaceId;
+          final key = _placeTileKeys.putIfAbsent(
+            place.identifier,
+            () => GlobalKey(),
+          );
           return Card(
+            key: key,
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             color: isSelected
                 ? Theme.of(context).colorScheme.primaryContainer
@@ -476,6 +488,23 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     });
 
     _fitCameraToResults(focus: place.location);
+    _scheduleScrollToSelected();
+  }
+
+  void _scheduleScrollToSelected() {
+    final selectedId = _selectedPlaceId;
+    if (selectedId == null) return;
+
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      final tileContext = _placeTileKeys[selectedId]?.currentContext;
+      if (tileContext != null) {
+        Scrollable.ensureVisible(
+          tileContext,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeInOut,
+        );
+      }
+    });
   }
 }
 
