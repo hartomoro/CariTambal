@@ -43,6 +43,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
   List<WorkshopPlace> _places = const [];
   bool _isLoading = true;
   _ErrorState? _errorState;
+  String? _selectedPlaceId;
 
   @override
   void initState() {
@@ -60,6 +61,7 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     _safeSetState(() {
       _isLoading = true;
       _errorState = null;
+      _selectedPlaceId = null;
     });
 
     try {
@@ -75,6 +77,9 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
 
       _safeSetState(() {
         _places = places;
+        _selectedPlaceId = places.isNotEmpty
+            ? places.first.placeId ?? places.first.name
+            : null;
         _errorState = places.isEmpty
             ? _ErrorState(
                 message: 'Tidak ada bengkel/tambal ban dalam radius.',
@@ -249,14 +254,21 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     }
 
     for (final place in _places) {
+      final isSelected = place.identifier == _selectedPlaceId;
       markers.add(
         Marker(
           markerId: MarkerId(place.placeId ?? place.name),
           position: place.location,
+          icon: isSelected
+              ? BitmapDescriptor.defaultMarkerWithHue(
+                  BitmapDescriptor.hueGreen,
+                )
+              : BitmapDescriptor.defaultMarker,
           infoWindow: InfoWindow(
             title: place.name,
             snippet: place.address,
           ),
+          onTap: () => _selectPlace(place),
         ),
       );
     }
@@ -353,10 +365,14 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
         itemCount: _places.length,
         itemBuilder: (context, index) {
           final place = _places[index];
+          final isSelected = place.identifier == _selectedPlaceId;
           return Card(
             margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            color: isSelected
+                ? Theme.of(context).colorScheme.primaryContainer
+                : null,
             child: ListTile(
-              onTap: () => _fitCameraToResults(focus: place.location),
+              onTap: () => _selectPlace(place),
               title: Text(place.name),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -442,13 +458,24 @@ class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
     ];
 
     _safeSetState(
-      () => _errorState = _ErrorState(message: message, actions: mergedActions),
+      () {
+        _errorState = _ErrorState(message: message, actions: mergedActions);
+        _selectedPlaceId = null;
+      },
     );
   }
 
   void _safeSetState(VoidCallback fn) {
     if (!mounted) return;
     setState(fn);
+  }
+
+  void _selectPlace(WorkshopPlace place) {
+    _safeSetState(() {
+      _selectedPlaceId = place.identifier;
+    });
+
+    _fitCameraToResults(focus: place.location);
   }
 }
 
@@ -487,6 +514,8 @@ class WorkshopPlace {
   final double distanceInMeters;
   final double? rating;
   final String? placeId;
+
+  String get identifier => placeId ?? name;
 }
 
 class PlacesRepository {
