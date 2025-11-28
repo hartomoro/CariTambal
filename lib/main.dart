@@ -1,122 +1,434 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const CariTambalApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class CariTambalApp extends StatelessWidget {
+  const CariTambalApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Cari Tambal',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const WorkshopLocatorPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class WorkshopLocatorPage extends StatefulWidget {
+  const WorkshopLocatorPage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<WorkshopLocatorPage> createState() => _WorkshopLocatorPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _WorkshopLocatorPageState extends State<WorkshopLocatorPage> {
+  static const _googlePlacesApiKey = String.fromEnvironment('GOOGLE_MAPS_API_KEY');
+  static const _defaultRadiusMeters = 5000;
 
-  void _incrementCounter() {
+  GoogleMapController? _mapController;
+  Position? _currentPosition;
+  List<WorkshopPlace> _places = const [];
+  bool _isLoading = true;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _initLocationAndSearch();
+  }
+
+  @override
+  void dispose() {
+    _mapController?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _initLocationAndSearch() async {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _isLoading = true;
+      _errorMessage = null;
     });
+
+    try {
+      final position = await _determinePosition();
+      setState(() => _currentPosition = position);
+
+      final places = await PlacesRepository(apiKey: _googlePlacesApiKey)
+          .fetchNearbyWorkshops(position, radiusMeters: _defaultRadiusMeters);
+
+      setState(() {
+        _places = places;
+      });
+
+      if (places.isEmpty) {
+        setState(() => _errorMessage = 'Tidak ada bengkel/tambal ban dalam radius.');
+      } else {
+        _moveCameraToNearest(places.first.location);
+      }
+    } on LocationPermissionDeniedException catch (e) {
+      setState(() => _errorMessage = e.message);
+    } on LocationServiceDisabledException catch (e) {
+      setState(() => _errorMessage = e.message);
+    } on PlacesApiKeyMissingException catch (e) {
+      setState(() => _errorMessage = e.message);
+    } on PlacesException catch (e) {
+      setState(() => _errorMessage = e.message);
+    } catch (e) {
+      setState(() => _errorMessage = 'Terjadi kesalahan: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  Future<Position> _determinePosition() async {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw LocationServiceDisabledException();
+    }
+
+    var permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+    }
+
+    if (permission == LocationPermission.denied) {
+      throw LocationPermissionDeniedException();
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      throw LocationPermissionDeniedException(
+        message:
+            'Izin lokasi ditolak permanen. Buka pengaturan untuk mengaktifkan akses lokasi.',
+      );
+    }
+
+    return Geolocator.getCurrentPosition();
+  }
+
+  void _moveCameraToNearest(LatLng target) {
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(target, 14.5),
+    );
+  }
+
+  Future<void> _onDirectionTap(WorkshopPlace place) async {
+    final destination = '${place.location.latitude},${place.location.longitude}';
+    final googleMapsUrl = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=$destination&travelmode=driving',
+    );
+
+    if (Platform.isIOS) {
+      final googleMapsSchemeUrl = Uri.parse('comgooglemaps://?daddr=$destination');
+      if (await canLaunchUrl(googleMapsSchemeUrl)) {
+        await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+        return;
+      }
+
+      final appleMapsUrl = Uri.parse('http://maps.apple.com/?daddr=$destination&dirflg=d');
+      if (await canLaunchUrl(appleMapsUrl)) {
+        await launchUrl(appleMapsUrl, mode: LaunchMode.externalApplication);
+        return;
+      }
+    }
+
+    if (await canLaunchUrl(googleMapsUrl)) {
+      await launchUrl(googleMapsUrl, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  Set<Marker> _buildMarkers() {
+    final markers = <Marker>{};
+
+    if (_currentPosition != null) {
+      markers.add(
+        Marker(
+          markerId: const MarkerId('current_location'),
+          position: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+          infoWindow: const InfoWindow(title: 'Lokasi Anda'),
+        ),
+      );
+    }
+
+    for (final place in _places) {
+      markers.add(
+        Marker(
+          markerId: MarkerId(place.placeId ?? place.name),
+          position: place.location,
+          infoWindow: InfoWindow(
+            title: place.name,
+            snippet: place.address,
+          ),
+        ),
+      );
+    }
+
+    return markers;
+  }
+
+  Widget _buildStatus() {
+    if (_isLoading) {
+      return const Expanded(
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_errorMessage != null) {
+      return Expanded(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 12),
+                ElevatedButton.icon(
+                  onPressed: _initLocationAndSearch,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Coba lagi'),
+                )
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Expanded(
+      child: Column(
+        children: [
+          SizedBox(
+            height: 280,
+            child: GoogleMap(
+              initialCameraPosition: CameraPosition(
+                target: _currentPosition != null
+                    ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+                    : const LatLng(-6.175392, 106.827153),
+                zoom: 13,
+              ),
+              markers: _buildMarkers(),
+              myLocationEnabled: true,
+              myLocationButtonEnabled: true,
+              onMapCreated: (controller) => _mapController = controller,
+            ),
+          ),
+          const SizedBox(height: 12),
+          _buildPlacesList(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlacesList() {
+    if (_places.isEmpty) {
+      return const Expanded(
+        child: Center(
+          child: Text('Tidak ada hasil untuk ditampilkan.'),
+        ),
+      );
+    }
+
+    return Expanded(
+      child: ListView.builder(
+        itemCount: _places.length,
+        itemBuilder: (context, index) {
+          final place = _places[index];
+          return Card(
+            margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: ListTile(
+              onTap: () => _moveCameraToNearest(place.location),
+              title: Text(place.name),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(place.address),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('${place.distanceInMeters.toStringAsFixed(0)} m'),
+                      if (place.rating != null)
+                        Row(
+                          children: [
+                            const Icon(Icons.star, color: Colors.amber, size: 18),
+                            Text(place.rating!.toStringAsFixed(1)),
+                          ],
+                        ),
+                    ],
+                  ),
+                ],
+              ),
+              trailing: ElevatedButton(
+                onPressed: () => _onDirectionTap(place),
+                child: const Text('Get Direction'),
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('Cari Tambal & Bengkel Terdekat'),
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Menampilkan lokasi Anda dan 5 bengkel/tambal ban terdekat dalam radius ${_defaultRadiusMeters / 1000} km.',
+                style: const TextStyle(fontSize: 14),
+              ),
             ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+          ),
+          _buildStatus(),
+        ],
       ),
     );
   }
+}
+
+class WorkshopPlace {
+  WorkshopPlace({
+    required this.name,
+    required this.address,
+    required this.location,
+    required this.distanceInMeters,
+    this.rating,
+    this.placeId,
+  });
+
+  final String name;
+  final String address;
+  final LatLng location;
+  final double distanceInMeters;
+  final double? rating;
+  final String? placeId;
+}
+
+class PlacesRepository {
+  PlacesRepository({required this.apiKey});
+
+  final String apiKey;
+
+  Future<List<WorkshopPlace>> fetchNearbyWorkshops(
+    Position position, {
+    int radiusMeters = 2000,
+  }) async {
+    if (apiKey.isEmpty) {
+      throw PlacesApiKeyMissingException();
+    }
+
+    final uri = Uri.parse(
+      'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
+      '?location=${position.latitude},${position.longitude}'
+      '&radius=$radiusMeters'
+      '&keyword=bicycle%20repair%20auto%20repair%20tire%20service'
+      '&opennow=true'
+      '&key=$apiKey',
+    );
+
+    final response = await http.get(uri);
+    if (response.statusCode != 200) {
+      throw PlacesException('Gagal memuat data lokasi (${response.statusCode}).');
+    }
+
+    final jsonBody = jsonDecode(response.body) as Map<String, dynamic>;
+    if (jsonBody['status'] != 'OK' && jsonBody['status'] != 'ZERO_RESULTS') {
+      throw PlacesException('Gagal memuat data: ${jsonBody['status']}');
+    }
+
+    final results = (jsonBody['results'] as List? ?? [])
+        .map((e) => e as Map<String, dynamic>)
+        .toList();
+
+    final places = results.map((place) {
+      final geometry = place['geometry'] as Map<String, dynamic>?;
+      final location = geometry?['location'] as Map<String, dynamic>?;
+      final lat = (location?['lat'] as num?)?.toDouble();
+      final lng = (location?['lng'] as num?)?.toDouble();
+
+      final distance = lat != null && lng != null
+          ? Geolocator.distanceBetween(
+              position.latitude,
+              position.longitude,
+              lat,
+              lng,
+            )
+          : double.infinity;
+
+      return WorkshopPlace(
+        name: place['name'] as String? ?? 'Tanpa nama',
+        address: place['vicinity'] as String? ?? 'Alamat tidak tersedia',
+        location: LatLng(lat ?? 0, lng ?? 0),
+        distanceInMeters: distance,
+        rating: (place['rating'] as num?)?.toDouble(),
+        placeId: place['place_id'] as String?,
+      );
+    }).where((place) => place.distanceInMeters.isFinite).toList();
+
+    places.sort((a, b) => a.distanceInMeters.compareTo(b.distanceInMeters));
+    return places.take(5).toList();
+  }
+}
+
+class PlacesException implements Exception {
+  PlacesException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class PlacesApiKeyMissingException extends PlacesException {
+  PlacesApiKeyMissingException()
+      : super(
+            'Google Maps API key belum diset. Tambahkan --dart-define=GOOGLE_MAPS_API_KEY=YOUR_KEY saat build/run.');
+}
+
+class LocationPermissionDeniedException implements Exception {
+  LocationPermissionDeniedException({
+    this.message =
+        'Izin lokasi ditolak. Kami memerlukan akses lokasi untuk menemukan bengkel terdekat.',
+  });
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class LocationServiceDisabledException implements Exception {
+  LocationServiceDisabledException({
+    this.message = 'Layanan GPS tidak aktif. Aktifkan lokasi untuk melanjutkan.',
+  });
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
